@@ -1,5 +1,6 @@
 export class StorageService {
     constructor() {
+        this.apiUrl = 'http://localhost:3000/api';
         this.prefix = 'shipment-manager:';
         this.keys = {
             destinations: `${this.prefix}destinations`,
@@ -11,12 +12,7 @@ export class StorageService {
     }
 
     initializeStorage() {
-        if (!localStorage.getItem(this.keys.destinations)) {
-            localStorage.setItem(this.keys.destinations, JSON.stringify([]));
-        }
-        if (!localStorage.getItem(this.keys.shipments)) {
-            localStorage.setItem(this.keys.shipments, JSON.stringify([]));
-        }
+        // Initialize settings in localStorage (settings remain local)
         if (!localStorage.getItem(this.keys.settings)) {
             localStorage.setItem(this.keys.settings, JSON.stringify({
                 theme: 'light',
@@ -27,85 +23,99 @@ export class StorageService {
         }
     }
 
-    getAll(entityType) {
+    async apiRequest(endpoint, options = {}) {
         try {
-            const key = this.keys[entityType];
-            if (!key) {
-                throw new Error(`Invalid entity type: ${entityType}`);
+            const response = await fetch(`${this.apiUrl}${endpoint}`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...options.headers
+                },
+                ...options
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.message || 'API request failed');
             }
 
-            const data = localStorage.getItem(key);
-            return data ? JSON.parse(data) : [];
+            return data;
+        } catch (error) {
+            console.error('API Error:', error);
+            throw error;
+        }
+    }
+
+    async getAll(entityType) {
+        try {
+            if (entityType === 'settings') {
+                return this.getSettings();
+            }
+
+            const endpoint = `/${entityType}`;
+            const response = await this.apiRequest(endpoint);
+            return response.data || [];
         } catch (error) {
             console.error(`Error getting all ${entityType}:`, error);
             return [];
         }
     }
 
-    getById(entityType, id) {
-        const items = this.getAll(entityType);
-        return items.find(item => item.id === id) || null;
+    async getById(entityType, id) {
+        try {
+            if (entityType === 'settings') {
+                return this.getSettings();
+            }
+
+            const endpoint = `/${entityType}/${id}`;
+            const response = await this.apiRequest(endpoint);
+            return response.data || null;
+        } catch (error) {
+            console.error(`Error getting ${entityType} by id:`, error);
+            return null;
+        }
     }
 
-    create(entityType, data) {
+    async create(entityType, data) {
         try {
-            const items = this.getAll(entityType);
-            const newItem = {
-                ...data,
-                id: this.generateId(),
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-            };
+            const endpoint = `/${entityType}`;
+            const response = await this.apiRequest(endpoint, {
+                method: 'POST',
+                body: JSON.stringify(data)
+            });
 
-            items.push(newItem);
-            this.saveAll(entityType, items);
             this.notifyUpdate();
-
-            return newItem;
+            return response.data;
         } catch (error) {
             console.error(`Error creating ${entityType}:`, error);
             throw error;
         }
     }
 
-    update(entityType, id, data) {
+    async update(entityType, id, data) {
         try {
-            const items = this.getAll(entityType);
-            const index = items.findIndex(item => item.id === id);
+            const endpoint = `/${entityType}/${id}`;
+            const response = await this.apiRequest(endpoint, {
+                method: 'PUT',
+                body: JSON.stringify(data)
+            });
 
-            if (index === -1) {
-                throw new Error(`${entityType} with id ${id} not found`);
-            }
-
-            items[index] = {
-                ...items[index],
-                ...data,
-                id,
-                updatedAt: new Date().toISOString()
-            };
-
-            this.saveAll(entityType, items);
             this.notifyUpdate();
-
-            return items[index];
+            return response.data;
         } catch (error) {
             console.error(`Error updating ${entityType}:`, error);
             throw error;
         }
     }
 
-    delete(entityType, id) {
+    async delete(entityType, id) {
         try {
-            const items = this.getAll(entityType);
-            const filteredItems = items.filter(item => item.id !== id);
+            const endpoint = `/${entityType}/${id}`;
+            await this.apiRequest(endpoint, {
+                method: 'DELETE'
+            });
 
-            if (items.length === filteredItems.length) {
-                throw new Error(`${entityType} with id ${id} not found`);
-            }
-
-            this.saveAll(entityType, filteredItems);
             this.notifyUpdate();
-
             return true;
         } catch (error) {
             console.error(`Error deleting ${entityType}:`, error);
@@ -113,39 +123,23 @@ export class StorageService {
         }
     }
 
-    search(entityType, query) {
-        if (!query || query.trim() === '') {
-            return this.getAll(entityType);
-        }
-
-        const items = this.getAll(entityType);
-        const lowerQuery = query.toLowerCase();
-
-        return items.filter(item => {
-            if (entityType === 'destinations') {
-                return (
-                    item.name?.toLowerCase().includes(lowerQuery) ||
-                    item.company?.toLowerCase().includes(lowerQuery) ||
-                    item.address?.city?.toLowerCase().includes(lowerQuery) ||
-                    item.address?.street?.toLowerCase().includes(lowerQuery) ||
-                    item.email?.toLowerCase().includes(lowerQuery) ||
-                    item.phone?.includes(query)
-                );
-            } else if (entityType === 'shipments') {
-                return (
-                    item.trackingNumber?.toLowerCase().includes(lowerQuery) ||
-                    item.carrier?.toLowerCase().includes(lowerQuery) ||
-                    item.status?.toLowerCase().includes(lowerQuery) ||
-                    item.items?.toLowerCase().includes(lowerQuery)
-                );
+    async search(entityType, query) {
+        try {
+            if (!query || query.trim() === '') {
+                return await this.getAll(entityType);
             }
-            return false;
-        });
+
+            const endpoint = `/${entityType}?q=${encodeURIComponent(query)}`;
+            const response = await this.apiRequest(endpoint);
+            return response.data || [];
+        } catch (error) {
+            console.error(`Error searching ${entityType}:`, error);
+            return [];
+        }
     }
 
-    filter(entityType, criteria) {
-        const items = this.getAll(entityType);
-
+    filter(items, criteria) {
+        // Client-side filtering (same as before)
         return items.filter(item => {
             for (const [key, value] of Object.entries(criteria)) {
                 if (value === null || value === undefined || value === '') {
@@ -193,30 +187,45 @@ export class StorageService {
         });
     }
 
-    exportData() {
-        const data = {
-            destinations: this.getAll('destinations'),
-            shipments: this.getAll('shipments'),
-            settings: this.getSettings(),
-            exportDate: new Date().toISOString(),
-            version: '1.0'
-        };
+    async exportData() {
+        try {
+            const destinations = await this.getAll('destinations');
+            const shipments = await this.getAll('shipments');
 
-        return JSON.stringify(data, null, 2);
+            const data = {
+                destinations,
+                shipments,
+                settings: this.getSettings(),
+                exportDate: new Date().toISOString(),
+                version: '1.0'
+            };
+
+            return JSON.stringify(data, null, 2);
+        } catch (error) {
+            console.error('Error exporting data:', error);
+            throw error;
+        }
     }
 
-    importData(jsonData) {
+    async importData(jsonData) {
         try {
             const data = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
 
-            if (data.destinations) {
-                localStorage.setItem(this.keys.destinations, JSON.stringify(data.destinations));
+            // Import destinations
+            if (data.destinations && Array.isArray(data.destinations)) {
+                for (const dest of data.destinations) {
+                    await this.create('destinations', dest);
+                }
             }
 
-            if (data.shipments) {
-                localStorage.setItem(this.keys.shipments, JSON.stringify(data.shipments));
+            // Import shipments
+            if (data.shipments && Array.isArray(data.shipments)) {
+                for (const ship of data.shipments) {
+                    await this.create('shipments', ship);
+                }
             }
 
+            // Import settings (local)
             if (data.settings) {
                 localStorage.setItem(this.keys.settings, JSON.stringify(data.settings));
             }
@@ -229,50 +238,52 @@ export class StorageService {
         }
     }
 
-    exportToCSV(entityType) {
-        const items = this.getAll(entityType);
+    async exportToCSV(entityType) {
+        try {
+            const items = await this.getAll(entityType);
 
-        if (items.length === 0) {
-            return '';
-        }
+            if (items.length === 0) {
+                return '';
+            }
 
-        if (entityType === 'destinations') {
-            const headers = ['ID', 'Nome', 'Azienda', 'Via', 'Città', 'Provincia', 'CAP', 'Paese', 'Telefono', 'Email', 'Note'];
-            const rows = items.map(item => [
-                item.id,
-                item.name,
-                item.company || '',
-                item.address?.street || '',
-                item.address?.city || '',
-                item.address?.state || '',
-                item.address?.zipCode || '',
-                item.address?.country || '',
-                item.phone || '',
-                item.email || '',
-                item.notes || ''
-            ]);
+            if (entityType === 'destinations') {
+                const headers = ['ID', 'Nome', 'Azienda', 'Via', 'Città', 'Provincia', 'CAP', 'Paese', 'Telefono', 'Email', 'Note'];
+                const rows = items.map(item => [
+                    item.id,
+                    item.name,
+                    item.company || '',
+                    item.address?.street || '',
+                    item.address?.city || '',
+                    item.address?.state || '',
+                    item.address?.zipCode || '',
+                    item.address?.country || '',
+                    item.phone || '',
+                    item.email || '',
+                    item.notes || ''
+                ]);
 
-            return this.convertToCSV([headers, ...rows]);
-        } else if (entityType === 'shipments') {
-            const headers = ['ID', 'Tracking', 'Corriere', 'Stato', 'Data Spedizione', 'Consegna Prevista', 'Destinatario', 'Costo'];
-            const rows = items.map(item => {
-                const destination = this.getById('destinations', item.destinationId);
-                return [
+                return this.convertToCSV([headers, ...rows]);
+            } else if (entityType === 'shipments') {
+                const headers = ['ID', 'Tracking', 'Corriere', 'Stato', 'Data Spedizione', 'Consegna Prevista', 'Destinatario', 'Costo'];
+                const rows = items.map(item => [
                     item.id,
                     item.trackingNumber,
                     item.carrier,
                     item.status,
                     item.shipDate,
                     item.expectedDelivery || '',
-                    destination?.name || '',
+                    item.destination?.name || '',
                     item.cost || ''
-                ];
-            });
+                ]);
 
-            return this.convertToCSV([headers, ...rows]);
+                return this.convertToCSV([headers, ...rows]);
+            }
+
+            return '';
+        } catch (error) {
+            console.error('Error exporting to CSV:', error);
+            throw error;
         }
-
-        return '';
     }
 
     convertToCSV(data) {
@@ -286,11 +297,17 @@ export class StorageService {
         ).join('\n');
     }
 
-    clearAll() {
-        localStorage.removeItem(this.keys.destinations);
-        localStorage.removeItem(this.keys.shipments);
-        this.initializeStorage();
-        this.notifyUpdate();
+    async clearAll() {
+        try {
+            // This would require a special endpoint to clear all data
+            // For now, we'll just clear local settings
+            localStorage.removeItem(this.keys.settings);
+            this.initializeStorage();
+            this.notifyUpdate();
+        } catch (error) {
+            console.error('Error clearing data:', error);
+            throw error;
+        }
     }
 
     getSettings() {
@@ -315,64 +332,63 @@ export class StorageService {
         }
     }
 
-    getStats() {
-        const destinations = this.getAll('destinations');
-        const shipments = this.getAll('shipments');
+    async getStats() {
+        try {
+            const response = await this.apiRequest('/shipments/stats');
+            return response.data;
+        } catch (error) {
+            console.error('Error getting stats:', error);
 
-        const now = new Date();
-        const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            // Fallback to client-side calculation
+            const destinations = await this.getAll('destinations');
+            const shipments = await this.getAll('shipments');
 
-        const shipmentsThisMonth = shipments.filter(s =>
-            new Date(s.createdAt) >= thisMonth
-        );
+            const now = new Date();
+            const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-        const shipmentsThisWeek = shipments.filter(s =>
-            new Date(s.createdAt) >= thisWeek
-        );
+            const shipmentsThisMonth = shipments.filter(s =>
+                new Date(s.createdAt) >= thisMonth
+            );
 
-        const activeShipments = shipments.filter(s =>
-            s.status === 'pending' || s.status === 'in-transit'
-        );
+            const shipmentsThisWeek = shipments.filter(s =>
+                new Date(s.createdAt) >= thisWeek
+            );
 
-        const deliveredShipments = shipments.filter(s =>
-            s.status === 'delivered'
-        );
+            const activeShipments = shipments.filter(s =>
+                s.status === 'pending' || s.status === 'in-transit'
+            );
 
-        const totalCost = shipments.reduce((sum, s) => sum + (parseFloat(s.cost) || 0), 0);
-        const costThisMonth = shipmentsThisMonth.reduce((sum, s) => sum + (parseFloat(s.cost) || 0), 0);
+            const deliveredShipments = shipments.filter(s =>
+                s.status === 'delivered'
+            );
 
-        const statusCounts = shipments.reduce((acc, s) => {
-            acc[s.status] = (acc[s.status] || 0) + 1;
-            return acc;
-        }, {});
+            const totalCost = shipments.reduce((sum, s) => sum + (parseFloat(s.cost) || 0), 0);
+            const costThisMonth = shipmentsThisMonth.reduce((sum, s) => sum + (parseFloat(s.cost) || 0), 0);
 
-        const carrierCounts = shipments.reduce((acc, s) => {
-            acc[s.carrier] = (acc[s.carrier] || 0) + 1;
-            return acc;
-        }, {});
+            const statusCounts = shipments.reduce((acc, s) => {
+                acc[s.status] = (acc[s.status] || 0) + 1;
+                return acc;
+            }, {});
 
-        return {
-            totalDestinations: destinations.length,
-            totalShipments: shipments.length,
-            shipmentsThisMonth: shipmentsThisMonth.length,
-            shipmentsThisWeek: shipmentsThisWeek.length,
-            activeShipments: activeShipments.length,
-            deliveredShipments: deliveredShipments.length,
-            totalCost,
-            costThisMonth,
-            statusCounts,
-            carrierCounts
-        };
-    }
+            const carrierCounts = shipments.reduce((acc, s) => {
+                acc[s.carrier] = (acc[s.carrier] || 0) + 1;
+                return acc;
+            }, {});
 
-    saveAll(entityType, items) {
-        const key = this.keys[entityType];
-        if (!key) {
-            throw new Error(`Invalid entity type: ${entityType}`);
+            return {
+                totalDestinations: destinations.length,
+                totalShipments: shipments.length,
+                shipmentsThisMonth: shipmentsThisMonth.length,
+                shipmentsThisWeek: shipmentsThisWeek.length,
+                activeShipments: activeShipments.length,
+                deliveredShipments: deliveredShipments.length,
+                totalCost,
+                costThisMonth,
+                statusCounts,
+                carrierCounts
+            };
         }
-
-        localStorage.setItem(key, JSON.stringify(items));
     }
 
     notifyUpdate() {
